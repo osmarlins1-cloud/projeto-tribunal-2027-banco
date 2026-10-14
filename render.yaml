@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: tribunal-2027-question-proxy
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: QUEST_API_KEY
+        sync: false
+      - key: QUEST_API_BASE
+        value: https://api.quest.api.br/v2
+      - key: ALLOWED_ORIGINS
+        value: "*"
+      - key: CACHE_DB
+        value: /app/data/questions.sqlite
