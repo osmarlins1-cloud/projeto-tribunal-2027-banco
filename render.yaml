@@ -1,8 +1,10 @@
 services:
   - type: web
     name: tribunal-2027-question-proxy
-    runtime: docker
+    runtime: node
     plan: free
+    buildCommand: npm install
+    startCommand: npm start
     healthCheckPath: /health
     envVars:
       - key: QUEST_API_KEY
@@ -11,5 +13,3 @@ services:
         value: https://api.quest.api.br/v2
       - key: ALLOWED_ORIGINS
         value: "*"
-      - key: CACHE_DB
-        value: /app/data/questions.sqlite
