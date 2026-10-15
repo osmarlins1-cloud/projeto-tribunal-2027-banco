@@ -1,0 +1,87 @@
+import express from "express";
+import cors from "cors";
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import path from "node:path";
+const app=express(),PORT=Number(process.env.PORT||8080),API_KEY=process.env.QUEST_API_KEY||"",API_BASE=(process.env.QUEST_API_BASE||"https://api.quest.api.br/v2").replace(/\/+$/,""),DB_PATH=process.env.CACHE_DB||"./data/questions.sqlite";
+fs.mkdirSync(path.dirname(DB_PATH),{recursive:true});
+const db=new Database(DB_PATH);db.pragma("journal_mode = WAL");
+db.exec(`
+CREATE TABLE IF NOT EXISTS questions(
+ id TEXT PRIMARY KEY,subject TEXT NOT NULL,topic TEXT NOT NULL,stage TEXT NOT NULL,q TEXT NOT NULL,
+ options_json TEXT NOT NULL,answer_index INTEGER NOT NULL,explanation TEXT NOT NULL,format TEXT NOT NULL DEFAULT 'MC',
+ source_type TEXT NOT NULL DEFAULT 'external',source_verified INTEGER NOT NULL DEFAULT 0,
+ source_name TEXT,source_year TEXT,source_cargo TEXT,provider_id TEXT,raw_json TEXT,fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_questions_topic ON questions(subject,topic,stage);
+CREATE TABLE IF NOT EXISTS cursors(subject TEXT NOT NULL,topic TEXT NOT NULL,next_cursor TEXT,exhausted INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,PRIMARY KEY(subject,topic));
+`);
+const insert=db.prepare(`INSERT OR IGNORE INTO questions(id,subject,topic,stage,q,options_json,answer_index,explanation,format,source_type,source_verified,source_name,source_year,source_cargo,provider_id,raw_json) VALUES(@id,@subject,@topic,@stage,@q,@options_json,@answer_index,@explanation,@format,@source_type,@source_verified,@source_name,@source_year,@source_cargo,@provider_id,@raw_json)`);
+const count=db.prepare("SELECT COUNT(*) n FROM questions");
+app.use(cors({origin:(process.env.ALLOWED_ORIGINS||"*")==="*"?"*":process.env.ALLOWED_ORIGINS.split(",").map(x=>x.trim())}));
+app.use(express.json({limit:"1mb"}));
+function strip(x=""){return String(x).replace(/<br\s*\/?\s*>/gi," ").replace(/<\/p>|<\/div>|<\/li>/gi," ").replace(/<[^>]*>/g," ").replace(/&nbsp;/g," ").replace(/&amp;/g,"&").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/\s+/g," ").trim();}
+function canonical(x=""){
+ const n=String(x).trim().toLocaleLowerCase("pt-BR");
+ const aliases={
+  "língua portuguesa":["português","língua portuguesa","linguagem"],
+  "direito processual civil":["processo civil","direito processual civil"],
+  "direito processual penal":["processo penal","direito processual penal"],
+  "administração financeira e orçamentária":["afo","administração financeira e orçamentária"],
+  "lei geral de proteção de dados (lgpd)":["lgpd","lei geral de proteção de dados"],
+  "informática e ti":["informática","tecnologia da informação","informática e ti"]
+ };
+ for(const [c,vals] of Object.entries(aliases))if(vals.includes(n))return c;
+ return n;
+}
+function providerMatter(x){
+ const c=canonical(x);
+ const map={"língua portuguesa":"Português","direito processual civil":"Direito Processual Civil","direito processual penal":"Direito Processual Penal","administração financeira e orçamentária":"Administração Financeira e Orçamentária","lei geral de proteção de dados (lgpd)":"LGPD","informática e ti":"Informática"};
+ return map[c]||String(x).trim();
+}
+function mapItem(item,wantedSubject,wantedTopic,stage){
+ const c=item.classificacao||{},subject=canonical(c.materia||wantedSubject),topic=String(c.assunto||"").trim();
+ // Exact subject and topic only: never silently mix content.
+ if(subject!==canonical(wantedSubject)||topic.toLocaleLowerCase("pt-BR")!==wantedTopic.toLocaleLowerCase("pt-BR"))return null;
+ const alts=(item.alternativas||[]).filter(a=>strip(a.texto||""));
+ const key=String(item.gabarito||"").trim().toUpperCase();
+ if(!key||item.anulada===true)return null;
+ const letters=alts.map(a=>String(a.letra||"").toUpperCase()),ce=alts.length===2&&letters.includes("C")&&letters.includes("E");
+ const idx=ce?(["C","A","CERTO"].includes(key)?0:(["E","B","ERRADO"].includes(key)?1:-1)):letters.indexOf(key);
+ if(idx<0||idx>=alts.length||alts.length<2)return null;
+ const proof=(item.provas||[])[0]||{};
+ const explanation=[item.comentario?strip(item.comentario):"","Catálogo externo Quest API. Banca: "+(proof.banca||"não informada")+"; órgão: "+(proof.orgao||"não informado")+"; ano: "+(proof.ano||"não informado")+"; cargo: "+(proof.cargo||"não informado")+".","Não marcada como questão oficial verificada pelo Projeto Tribunal 2027."].filter(Boolean).join(" ");
+ return {id:"EXT-"+String(item.id),subject:wantedSubject,topic:wantedTopic,stage,q:strip(item.enunciado||""),o:alts.map(a=>strip(a.texto||"")),a:idx,e:explanation,format:ce?"CE":"MC",sourceType:"external",sourceVerified:false,sourceName:proof.banca||"",sourceYear:String(proof.ano||""),sourceCargo:proof.cargo||"",providerId:String(item.id||"")};
+}
+function rowQuestion(r){return {id:r.id,subject:r.subject,topic:r.topic,stage:r.stage,q:r.q,o:JSON.parse(r.options_json),a:r.answer_index,e:r.explanation,format:r.format,sourceType:r.source_type,sourceVerified:Boolean(r.source_verified),sourceName:r.source_name,sourceYear:r.source_year,sourceCargo:r.source_cargo,providerId:r.provider_id};}
+app.get("/health",(req,res)=>res.json({ok:true,service:"Projeto Tribunal 2027 — banco online",cachedQuestions:count.get().n,providerConfigured:Boolean(API_KEY)}));
+app.get("/api/stats",(req,res)=>res.json({cachedQuestions:count.get().n,providerConfigured:Boolean(API_KEY),provider:"Quest API"}));
+app.get("/api/questions",async(req,res)=>{
+ try{
+  const subject=String(req.query.subject||"").trim(),topic=String(req.query.topic||"").trim(),stage=String(req.query.stage||"Aprendizagem"),limit=Math.max(1,Math.min(20,Number(req.query.limit||10)));
+  if(!subject||!topic)return res.status(400).json({error:"Informe subject e topic."});
+  if(!API_KEY)return res.status(503).json({error:"Backend sem QUEST_API_KEY. Configure a chave como segredo do servidor, nunca no HTML."});
+  const cursorRow=db.prepare("SELECT * FROM cursors WHERE subject=? AND topic=?").get(subject,topic);
+  if(cursorRow?.exhausted)return res.json({items:[],totalAvailable:0,inserted:0,source:"sqlite-cache",exhausted:true,message:"O catálogo não tem mais itens novos para este assunto exato."});
+  let cursor=cursorRow?.next_cursor||null,exhausted=false,added=[];
+  // Continue over provider pages until we have the requested number of new, validated questions.
+  for(let attempt=0;attempt<5&&added.length<limit&&!exhausted;attempt++){
+   const p=new URLSearchParams({materia:providerMatter(subject),assunto:topic,tem_gabarito:"true",anulada:"false",include_gabarito:"true",per_page:"100"});
+   if(cursor)p.set("after_id",cursor);else p.set("page","1");
+   const response=await fetch(`${API_BASE}/questoes?${p}`,{headers:{"X-API-Key":API_KEY,"Accept":"application/json"}});
+   if(!response.ok){const body=await response.text();return res.status(response.status===401?502:response.status).json({error:`Provedor respondeu HTTP ${response.status}. ${body.slice(0,250)}`});}
+   const payload=await response.json(),data=payload?.data||{},items=data.items||[];
+   const next=data.next_cursor||null;exhausted=!data.has_more||!next;
+   for(const item of items){
+    const m=mapItem(item,subject,topic,stage);if(!m)continue;
+    const record={...m,options_json:JSON.stringify(m.o),answer_index:m.a,source_verified:0,source_type:"external",source_name:m.sourceName,source_year:m.sourceYear,source_cargo:m.sourceCargo,provider_id:m.providerId,raw_json:JSON.stringify(item)};
+    const result=insert.run(record);if(result.changes)added.push(m);
+    if(added.length>=limit)break;
+   }
+   cursor=next;
+   db.prepare(`INSERT INTO cursors(subject,topic,next_cursor,exhausted,updated_at) VALUES(?,?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(subject,topic) DO UPDATE SET next_cursor=excluded.next_cursor,exhausted=excluded.exhausted,updated_at=CURRENT_TIMESTAMP`).run(subject,topic,cursor,exhausted?1:0);
+   if(!items.length)break;
+  }
+  res.json({items:added,totalAvailable:added.length,inserted:added.length,source:"Quest API + SQLite cache",cached:false,exhausted});
+ }catch(e){console.error(e);res.status(500).json({error:"Falha no banco online.",detail:String(e?.message||e)});}
+});
+app.listen(PORT,()=>console.log(`Listening ${PORT}; provider key ${API_KEY?"configured":"missing"}`));
