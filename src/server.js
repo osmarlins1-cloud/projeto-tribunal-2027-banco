@@ -75,7 +75,8 @@ app.get("/api/questions", async (req, res) => {
       });
     }
 
-  const payload = await response.json();
+
+const payload = await response.json();
 const data = Array.isArray(payload.data)
   ? payload.data
   : Array.isArray(payload.data?.items)
@@ -83,6 +84,7 @@ const data = Array.isArray(payload.data)
     : Array.isArray(payload.items)
       ? payload.items
       : [];
+
 
     const questions = data
       .filter(item => item && item.anulada !== true && item.gabarito)
