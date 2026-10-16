@@ -51,7 +51,7 @@ function chooseExactOrClose(requested, candidates) {
     const score = [...wanted].filter(word => words.has(word)).length / Math.max(wanted.size, words.size, 1);
     if (score > bestScore) { best = value; bestScore = score; }
   }
-  return bestScore >= 0.6 ? best : null;
+  return bestScore >= 0.3 ? best : null;
 }
 
 async function resolveCatalog(subject, topic) {
@@ -61,7 +61,7 @@ async function resolveCatalog(subject, topic) {
   if (!matchedSubject) return { matchedSubject: null, matchedTopic: null, subjectSuggestions: subjects.slice(0, 20), topicSuggestions: [] };
   const searchTerm = topic.trim().split(/\s+/)[0];
 const topicPayload = await providerGet("/filtros/assuntos", { materia: matchedSubject, q: searchTerm, page: 1, per_page: 100 });
-  const topics = getItems(topicPayload);
+   const topics = getItems(topicPayload);
   return { matchedSubject, matchedTopic: chooseExactOrClose(topic, topics), subjectSuggestions: [], topicSuggestions: topics.slice(0, 30) };
 }
 
