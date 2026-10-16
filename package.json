@@ -1,7 +1,7 @@
 
 {
   "name": "projeto-tribunal-2027-banco-online",
-  "version": "1.0.1",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.21.2",
-    "better-sqlite3": "^11.8.1"
+    "express": "^4.21.2"
   }
 }
