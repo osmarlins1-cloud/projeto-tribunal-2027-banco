@@ -59,7 +59,8 @@ async function resolveCatalog(subject, topic) {
   const subjects = getItems(subjectPayload);
   const matchedSubject = chooseExactOrClose(subject, subjects);
   if (!matchedSubject) return { matchedSubject: null, matchedTopic: null, subjectSuggestions: subjects.slice(0, 20), topicSuggestions: [] };
-  const topicPayload = await providerGet("/filtros/assuntos", { materia: matchedSubject, q: topic, page: 1, per_page: 100 });
+  const searchTerm = topic.trim().split(/\s+/)[0];
+const topicPayload = await providerGet("/filtros/assuntos", { materia: matchedSubject, q: searchTerm, page: 1, per_page: 100 });
   const topics = getItems(topicPayload);
   return { matchedSubject, matchedTopic: chooseExactOrClose(topic, topics), subjectSuggestions: [], topicSuggestions: topics.slice(0, 30) };
 }
